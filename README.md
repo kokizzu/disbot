@@ -13,7 +13,8 @@ The default source and destination are:
 - directory: `/home/kyz/Pictures/EgaoSharkWaifuCulture`
 
 The bot needs only `View Channel` and `Read Message History` in the source
-channel. Use `make bot-info` to print the least-privilege installation URL.
+channel. Use `make bot-info` to print the least-privilege installation URL, or
+`make open-install` to open it in the local browser.
 
 ## Workflow
 
@@ -21,6 +22,7 @@ channel. Use `make bot-info` to print the least-privilege installation URL.
 make verify
 make bot-info
 make configure
+make open-install
 make plan
 make download
 ```

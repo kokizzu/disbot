@@ -115,12 +115,14 @@ func main() {
 		err = runInfo(ctx, client)
 	case "configure":
 		err = runConfigure(ctx, client)
+	case "invite":
+		err = runInvite(ctx, client)
 	case "plan":
 		err = runPlan(ctx, client)
 	case "download":
 		err = runDownload(ctx, client)
 	default:
-		err = fmt.Errorf("usage: disbot {info|configure|plan|download}")
+		err = fmt.Errorf("usage: disbot {info|configure|invite|plan|download}")
 	}
 	if err != nil {
 		fatal(err)
@@ -253,6 +255,15 @@ func runInfo(ctx context.Context, client *discordClient) error {
 	fmt.Printf("Application icon configured: %v\n", app.Icon != "")
 	fmt.Printf("Bot avatar configured: %v\n", me.Avatar != "")
 	fmt.Printf("Install URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=%s&integration_type=0&scope=bot\n", app.ID, botPermissions)
+	return nil
+}
+
+func runInvite(ctx context.Context, client *discordClient) error {
+	var app application
+	if err := client.do(ctx, http.MethodGet, "/applications/@me", nil, &app); err != nil {
+		return err
+	}
+	fmt.Printf("https://discord.com/oauth2/authorize?client_id=%s&permissions=%s&integration_type=0&scope=bot\n", app.ID, botPermissions)
 	return nil
 }
 

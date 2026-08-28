@@ -1,4 +1,4 @@
-.PHONY: audit inspect-config install-icon read-imagegen-skill format test build verify bot-info configure plan download repo-plan repo-push
+.PHONY: audit inspect-config install-icon read-imagegen-skill format test build verify bot-info configure open-install plan download repo-plan repo-push
 
 audit:
 	@python3 scripts/codex_repo_admin.py audit
@@ -26,6 +26,9 @@ bot-info:
 
 configure:
 	@python3 scripts/codex_repo_admin.py run-bot configure
+
+open-install:
+	@python3 scripts/codex_repo_admin.py open-install
 
 plan:
 	@python3 scripts/codex_repo_admin.py run-bot plan

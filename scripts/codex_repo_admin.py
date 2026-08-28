@@ -168,6 +168,14 @@ def run_bot(args: list[str]) -> None:
     run(["go", "run", "./cmd/disbot", *args])
 
 
+def open_install() -> None:
+    invite_url = run(["go", "run", "./cmd/disbot", "invite"], capture=True).strip()
+    if not invite_url.startswith("https://discord.com/oauth2/authorize?"):
+        raise SystemExit("refusing unexpected install URL")
+    run(["xdg-open", invite_url])
+    print("opened the least-privilege Discord bot installation page")
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -267,6 +275,9 @@ def main() -> None:
         return
     if command == "run-bot":
         run_bot(sys.argv[2:])
+        return
+    if command == "open-install":
+        open_install()
         return
     if command == "repo-plan":
         repo_plan()
