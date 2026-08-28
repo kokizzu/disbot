@@ -1,0 +1,4 @@
+.env
+.disbot-plan.json
+.repo-push-plan.json
+/bin/
