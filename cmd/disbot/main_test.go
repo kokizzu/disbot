@@ -44,3 +44,26 @@ func TestOutputFilename(t *testing.T) {
 		t.Fatalf("outputFilename() = %q, want %q", got, want)
 	}
 }
+
+func TestImageItemsFromMessage(t *testing.T) {
+	msg := message{
+		ID:      "123",
+		Content: "source https://example.com/full/art.jpeg?large=1",
+		Attachments: []attachment{
+			{ID: "a1", Filename: "upload.png", URL: "https://cdn.example/upload.png", ContentType: "image/png", Size: 42},
+			{ID: "a2", Filename: "clip.mp4", URL: "https://cdn.example/clip.mp4", ContentType: "video/mp4"},
+		},
+		Embeds: []embed{
+			{Image: &embedMedia{URL: "https://example.com/embed.webp"}, Thumbnail: &embedMedia{URL: "https://example.com/embed.webp"}},
+		},
+		StickerItems: []stickerItem{{ID: "s1", Name: "wave", FormatType: 1}},
+	}
+
+	items := imageItemsFromMessage(msg)
+	if got, want := len(items), 4; got != want {
+		t.Fatalf("len(imageItemsFromMessage()) = %d, want %d: %#v", got, want, items)
+	}
+	if items[0].AttachmentID != "a1" || items[1].AttachmentID != "embed-1-image" || items[2].AttachmentID != "link-1" || items[3].AttachmentID != "sticker-s1" {
+		t.Fatalf("unexpected item order/IDs: %#v", items)
+	}
+}

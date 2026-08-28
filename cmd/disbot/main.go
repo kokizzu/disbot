@@ -38,8 +38,27 @@ type attachment struct {
 }
 
 type message struct {
-	ID          string       `json:"id"`
-	Attachments []attachment `json:"attachments"`
+	ID           string        `json:"id"`
+	Content      string        `json:"content"`
+	Attachments  []attachment  `json:"attachments"`
+	Embeds       []embed       `json:"embeds"`
+	StickerItems []stickerItem `json:"sticker_items"`
+}
+
+type embed struct {
+	Image     *embedMedia `json:"image"`
+	Thumbnail *embedMedia `json:"thumbnail"`
+}
+
+type embedMedia struct {
+	URL      string `json:"url"`
+	ProxyURL string `json:"proxy_url"`
+}
+
+type stickerItem struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	FormatType int    `json:"format_type"`
 }
 
 type guild struct {
@@ -388,15 +407,7 @@ func collectImages(ctx context.Context, client *discordClient, channelID string)
 		}
 		messageCount += len(messages)
 		for _, msg := range messages {
-			for _, item := range msg.Attachments {
-				if !isImageAttachment(item) {
-					continue
-				}
-				items = append(items, planItem{
-					MessageID: msg.ID, AttachmentID: item.ID, Filename: item.Filename,
-					URL: item.URL, ContentType: item.ContentType, Size: item.Size,
-				})
-			}
+			items = append(items, imageItemsFromMessage(msg)...)
 		}
 		before = messages[len(messages)-1].ID
 		if len(messages) < 100 {
@@ -492,12 +503,82 @@ func isImageAttachment(item attachment) bool {
 	if mediaType := mime.TypeByExtension(extension); strings.HasPrefix(mediaType, "image/") {
 		return true
 	}
+	return isImageExtension(extension)
+}
+
+func isImageExtension(extension string) bool {
+	extension = strings.ToLower(extension)
 	switch extension {
 	case ".avif", ".bmp", ".gif", ".heic", ".heif", ".jfif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp":
 		return true
 	default:
 		return false
 	}
+}
+
+func imageItemsFromMessage(msg message) []planItem {
+	items := make([]planItem, 0, len(msg.Attachments)+len(msg.Embeds)*2)
+	seen := make(map[string]bool)
+	add := func(id, filename, rawURL, contentType string, size int64) {
+		if rawURL == "" || seen[rawURL] {
+			return
+		}
+		seen[rawURL] = true
+		items = append(items, planItem{
+			MessageID: msg.ID, AttachmentID: id, Filename: filename,
+			URL: rawURL, ContentType: contentType, Size: size,
+		})
+	}
+
+	for _, item := range msg.Attachments {
+		if isImageAttachment(item) {
+			add(item.ID, item.Filename, item.URL, item.ContentType, item.Size)
+		}
+	}
+	for index, item := range msg.Embeds {
+		if item.Image != nil {
+			rawURL := firstNonempty(item.Image.URL, item.Image.ProxyURL)
+			add(fmt.Sprintf("embed-%d-image", index+1), filenameFromURL(rawURL, fmt.Sprintf("embed-%d-image", index+1)), rawURL, "", 0)
+		}
+		if item.Thumbnail != nil {
+			rawURL := firstNonempty(item.Thumbnail.URL, item.Thumbnail.ProxyURL)
+			add(fmt.Sprintf("embed-%d-thumbnail", index+1), filenameFromURL(rawURL, fmt.Sprintf("embed-%d-thumbnail", index+1)), rawURL, "", 0)
+		}
+	}
+	linkIndex := 0
+	for _, field := range strings.Fields(msg.Content) {
+		rawURL := strings.Trim(field, "<>[](){}\"'.,")
+		parsed, err := url.Parse(rawURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || !isImageExtension(filepath.Ext(parsed.Path)) {
+			continue
+		}
+		linkIndex++
+		add(fmt.Sprintf("link-%d", linkIndex), filenameFromURL(rawURL, fmt.Sprintf("linked-image-%d", linkIndex)), rawURL, "", 0)
+	}
+	for _, item := range msg.StickerItems {
+		extension := ".png"
+		if item.FormatType == 4 {
+			extension = ".gif"
+		}
+		if item.FormatType == 3 { // Lottie JSON is not a raster image.
+			continue
+		}
+		rawURL := "https://media.discordapp.net/stickers/" + item.ID + extension
+		add("sticker-"+item.ID, safeFilename(item.Name)+extension, rawURL, "", 0)
+	}
+	return items
+}
+
+func filenameFromURL(rawURL, fallback string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fallback
+	}
+	name := safeFilename(filepath.Base(parsed.Path))
+	if name == "attachment" || name == "." || name == "/" {
+		return fallback
+	}
+	return name
 }
 
 func safeFilename(name string) string {
