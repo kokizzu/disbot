@@ -33,6 +33,7 @@ type attachment struct {
 	ID          string `json:"id"`
 	Filename    string `json:"filename"`
 	URL         string `json:"url"`
+	ProxyURL    string `json:"proxy_url"`
 	ContentType string `json:"content_type"`
 	Size        int64  `json:"size"`
 }
@@ -86,15 +87,17 @@ type application struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Icon        string `json:"icon"`
+	Flags       int    `json:"flags"`
 }
 
 type planItem struct {
-	MessageID    string `json:"message_id"`
-	AttachmentID string `json:"attachment_id"`
-	Filename     string `json:"filename"`
-	URL          string `json:"url"`
-	ContentType  string `json:"content_type,omitempty"`
-	Size         int64  `json:"size"`
+	MessageID     string   `json:"message_id"`
+	AttachmentID  string   `json:"attachment_id"`
+	Filename      string   `json:"filename"`
+	URL           string   `json:"url"`
+	AlternateURLs []string `json:"alternate_urls,omitempty"`
+	ContentType   string   `json:"content_type,omitempty"`
+	Size          int64    `json:"size"`
 }
 
 type downloadPlan struct {
@@ -134,6 +137,8 @@ func main() {
 		err = runInfo(ctx, client)
 	case "configure":
 		err = runConfigure(ctx, client)
+	case "enable-message-content":
+		err = runEnableMessageContent(ctx, client)
 	case "invite":
 		err = runInvite(ctx, client)
 	case "plan":
@@ -141,7 +146,7 @@ func main() {
 	case "download":
 		err = runDownload(ctx, client)
 	default:
-		err = fmt.Errorf("usage: disbot {info|configure|invite|plan|download}")
+		err = fmt.Errorf("usage: disbot {info|configure|enable-message-content|invite|plan|download}")
 	}
 	if err != nil {
 		fatal(err)
@@ -273,7 +278,41 @@ func runInfo(ctx context.Context, client *discordClient) error {
 	fmt.Printf("Description configured: %v\n", app.Description == appDescription)
 	fmt.Printf("Application icon configured: %v\n", app.Icon != "")
 	fmt.Printf("Bot avatar configured: %v\n", me.Avatar != "")
+	fmt.Printf("Message Content Intent enabled: %v (flags=%d)\n", messageContentEnabled(app.Flags), app.Flags)
 	fmt.Printf("Install URL: https://discord.com/oauth2/authorize?client_id=%s&permissions=%s&integration_type=0&scope=bot\n", app.ID, botPermissions)
+	return nil
+}
+
+func messageContentEnabled(flags int) bool {
+	const (
+		gatewayMessageContent        = 1 << 18
+		gatewayMessageContentLimited = 1 << 19
+	)
+	return flags&(gatewayMessageContent|gatewayMessageContentLimited) != 0
+}
+
+func withMessageContentEnabled(flags int) int {
+	const gatewayMessageContentLimited = 1 << 19
+	return flags | gatewayMessageContentLimited
+}
+
+func runEnableMessageContent(ctx context.Context, client *discordClient) error {
+	var app application
+	if err := client.do(ctx, http.MethodGet, "/applications/@me", nil, &app); err != nil {
+		return err
+	}
+	if messageContentEnabled(app.Flags) {
+		fmt.Printf("Message Content Intent is already enabled (flags=%d).\n", app.Flags)
+		return nil
+	}
+	requestedFlags := withMessageContentEnabled(app.Flags)
+	if err := client.do(ctx, http.MethodPatch, "/applications/@me", map[string]any{"flags": requestedFlags}, &app); err != nil {
+		return fmt.Errorf("enable Message Content Intent: %w", err)
+	}
+	if !messageContentEnabled(app.Flags) {
+		return fmt.Errorf("Discord accepted the update but did not enable Message Content Intent (flags=%d)", app.Flags)
+	}
+	fmt.Printf("Enabled Message Content Intent (flags=%d).\n", app.Flags)
 	return nil
 }
 
@@ -432,7 +471,13 @@ func runDownload(ctx context.Context, client *discordClient) error {
 	if err := os.MkdirAll(plan.OutputDir, 0o750); err != nil {
 		return err
 	}
+	type downloadFailure struct {
+		Index    int    `json:"index"`
+		Filename string `json:"filename"`
+		Error    string `json:"error"`
+	}
 	downloaded, skipped := 0, 0
+	failures := make([]downloadFailure, 0)
 	for index, item := range plan.Items {
 		name := outputFilename(item.MessageID, attachment{ID: item.AttachmentID, Filename: item.Filename})
 		destination := filepath.Join(plan.OutputDir, name)
@@ -445,19 +490,47 @@ func runDownload(ctx context.Context, client *discordClient) error {
 			return err
 		}
 		if err := downloadOne(ctx, client.http, item, destination); err != nil {
-			return fmt.Errorf("download item %d/%d: %w", index+1, len(plan.Items), err)
+			failures = append(failures, downloadFailure{Index: index + 1, Filename: item.Filename, Error: err.Error()})
+			fmt.Printf("Unavailable item %d/%d: %s\n", index+1, len(plan.Items), item.Filename)
+			continue
 		}
 		downloaded++
 		if downloaded%25 == 0 {
 			fmt.Printf("Downloaded %d/%d new files...\n", downloaded, len(plan.Items)-skipped)
 		}
 	}
-	fmt.Printf("Complete: downloaded=%d, already-present=%d, destination=%s\n", downloaded, skipped, plan.OutputDir)
+	failureData, err := json.MarshalIndent(failures, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(".disbot-download-failures.json", append(failureData, '\n'), 0o600); err != nil {
+		return err
+	}
+	fmt.Printf("Complete: downloaded=%d, already-present=%d, unavailable=%d, destination=%s\n", downloaded, skipped, len(failures), plan.OutputDir)
+	if len(failures) > 0 {
+		fmt.Println("Failure checkpoint: .disbot-download-failures.json")
+	}
 	return nil
 }
 
 func downloadOne(ctx context.Context, httpClient *http.Client, item planItem, destination string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.URL, nil)
+	urls := append([]string{item.URL}, item.AlternateURLs...)
+	errorsSeen := make([]string, 0, len(urls))
+	for _, rawURL := range urls {
+		if rawURL == "" {
+			continue
+		}
+		if err := downloadURL(ctx, httpClient, rawURL, item, destination); err == nil {
+			return nil
+		} else {
+			errorsSeen = append(errorsSeen, err.Error())
+		}
+	}
+	return fmt.Errorf("all %d source URLs failed: %s", len(errorsSeen), strings.Join(errorsSeen, "; "))
+}
+
+func downloadURL(ctx context.Context, httpClient *http.Client, rawURL string, item planItem, destination string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
 	}
@@ -519,30 +592,30 @@ func isImageExtension(extension string) bool {
 func imageItemsFromMessage(msg message) []planItem {
 	items := make([]planItem, 0, len(msg.Attachments)+len(msg.Embeds)*2)
 	seen := make(map[string]bool)
-	add := func(id, filename, rawURL, contentType string, size int64) {
+	add := func(id, filename, rawURL, contentType string, size int64, alternateURLs ...string) {
 		if rawURL == "" || seen[rawURL] {
 			return
 		}
 		seen[rawURL] = true
 		items = append(items, planItem{
 			MessageID: msg.ID, AttachmentID: id, Filename: filename,
-			URL: rawURL, ContentType: contentType, Size: size,
+			URL: rawURL, AlternateURLs: uniqueAlternates(rawURL, alternateURLs...), ContentType: contentType, Size: size,
 		})
 	}
 
 	for _, item := range msg.Attachments {
 		if isImageAttachment(item) {
-			add(item.ID, item.Filename, item.URL, item.ContentType, item.Size)
+			add(item.ID, item.Filename, item.URL, item.ContentType, item.Size, item.ProxyURL)
 		}
 	}
 	for index, item := range msg.Embeds {
 		if item.Image != nil {
 			rawURL := firstNonempty(item.Image.URL, item.Image.ProxyURL)
-			add(fmt.Sprintf("embed-%d-image", index+1), filenameFromURL(rawURL, fmt.Sprintf("embed-%d-image", index+1)), rawURL, "", 0)
+			add(fmt.Sprintf("embed-%d-image", index+1), filenameFromURL(rawURL, fmt.Sprintf("embed-%d-image", index+1)), rawURL, "", 0, item.Image.ProxyURL)
 		}
 		if item.Thumbnail != nil {
 			rawURL := firstNonempty(item.Thumbnail.URL, item.Thumbnail.ProxyURL)
-			add(fmt.Sprintf("embed-%d-thumbnail", index+1), filenameFromURL(rawURL, fmt.Sprintf("embed-%d-thumbnail", index+1)), rawURL, "", 0)
+			add(fmt.Sprintf("embed-%d-thumbnail", index+1), filenameFromURL(rawURL, fmt.Sprintf("embed-%d-thumbnail", index+1)), rawURL, "", 0, item.Thumbnail.ProxyURL)
 		}
 	}
 	linkIndex := 0
@@ -564,9 +637,23 @@ func imageItemsFromMessage(msg message) []planItem {
 			continue
 		}
 		rawURL := "https://media.discordapp.net/stickers/" + item.ID + extension
-		add("sticker-"+item.ID, safeFilename(item.Name)+extension, rawURL, "", 0)
+		alternateURL := "https://cdn.discordapp.com/stickers/" + item.ID + extension
+		add("sticker-"+item.ID, safeFilename(item.Name)+extension, rawURL, "", 0, alternateURL)
 	}
 	return items
+}
+
+func uniqueAlternates(primary string, candidates ...string) []string {
+	seen := map[string]bool{primary: true, "": true}
+	result := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		result = append(result, candidate)
+	}
+	return result
 }
 
 func filenameFromURL(rawURL, fallback string) string {

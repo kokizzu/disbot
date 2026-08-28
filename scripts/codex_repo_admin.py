@@ -176,6 +176,35 @@ def open_install() -> None:
     print("opened the least-privilege Discord bot installation page")
 
 
+def download_status() -> None:
+    plan = json.loads((ROOT / ".disbot-plan.json").read_text(encoding="utf-8"))
+    output_dir = Path(plan["output_dir"])
+    complete = 0
+    total_bytes = 0
+    missing: list[int] = []
+    for index, item in enumerate(plan["items"], start=1):
+        prefix = f"{item['message_id']}_{item['attachment_id']}_"
+        matches = [path for path in output_dir.iterdir() if path.is_file() and path.name.startswith(prefix) and not path.name.endswith(".part")]
+        if not matches:
+            missing.append(index)
+            continue
+        expected_size = int(item.get("size", 0))
+        match = matches[0]
+        if expected_size > 0 and match.stat().st_size != expected_size:
+            missing.append(index)
+            continue
+        complete += 1
+        total_bytes += match.stat().st_size
+    partials = [path.name for path in output_dir.iterdir() if path.name.endswith(".part")]
+    print(f"planned: {len(plan['items'])}")
+    print(f"complete: {complete}")
+    print(f"missing: {len(missing)}")
+    print(f"missing plan indexes: {','.join(map(str, missing)) if missing else '(none)'}")
+    print(f"downloaded bytes: {total_bytes}")
+    print(f"partial files: {len(partials)}")
+    print(f"destination: {output_dir}")
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -278,6 +307,9 @@ def main() -> None:
         return
     if command == "open-install":
         open_install()
+        return
+    if command == "download-status":
+        download_status()
         return
     if command == "repo-plan":
         repo_plan()

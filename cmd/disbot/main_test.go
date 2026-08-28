@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestIsImageAttachment(t *testing.T) {
 	tests := []struct {
@@ -65,5 +72,52 @@ func TestImageItemsFromMessage(t *testing.T) {
 	}
 	if items[0].AttachmentID != "a1" || items[1].AttachmentID != "embed-1-image" || items[2].AttachmentID != "link-1" || items[3].AttachmentID != "sticker-s1" {
 		t.Fatalf("unexpected item order/IDs: %#v", items)
+	}
+}
+
+func TestMessageContentEnabled(t *testing.T) {
+	if messageContentEnabled(0) {
+		t.Fatal("zero flags must not enable message content")
+	}
+	if !messageContentEnabled(1 << 18) {
+		t.Fatal("GATEWAY_MESSAGE_CONTENT must enable message content")
+	}
+	if !messageContentEnabled(1 << 19) {
+		t.Fatal("GATEWAY_MESSAGE_CONTENT_LIMITED must enable message content")
+	}
+}
+
+func TestWithMessageContentEnabledPreservesFlags(t *testing.T) {
+	const existing = 1 << 6
+	got := withMessageContentEnabled(existing)
+	if got&existing == 0 {
+		t.Fatal("existing application flags were not preserved")
+	}
+	if got&(1<<19) == 0 {
+		t.Fatal("limited message content flag was not enabled")
+	}
+}
+
+func TestDownloadOneUsesAlternateURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/missing" {
+			http.NotFound(writer, request)
+			return
+		}
+		_, _ = writer.Write([]byte("image-data"))
+	}))
+	defer server.Close()
+
+	destination := filepath.Join(t.TempDir(), "image.png")
+	item := planItem{Filename: "image.png", URL: server.URL + "/missing", AlternateURLs: []string{server.URL + "/available"}, Size: 10}
+	if err := downloadOne(context.Background(), server.Client(), item, destination); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "image-data"; got != want {
+		t.Fatalf("downloaded data = %q, want %q", got, want)
 	}
 }

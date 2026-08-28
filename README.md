@@ -22,9 +22,11 @@ channel. Use `make bot-info` to print the least-privilege installation URL, or
 make verify
 make bot-info
 make configure
+make enable-message-content
 make open-install
 make plan
 make download
+make download-status
 ```
 
 `make plan` scans the visible channel history and saves an ignored,

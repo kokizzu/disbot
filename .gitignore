@@ -1,4 +1,5 @@
 .env
 .disbot-plan.json
+.disbot-download-failures.json
 .repo-push-plan.json
 /bin/
